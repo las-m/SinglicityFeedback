@@ -22,7 +22,7 @@ function varargout = SinglicityFeedbackGui(varargin)
 
 % Edit the above text to modify the response to help SinglicityFeedbackGui
 
-% Last Modified by GUIDE v2.5 02-Feb-2017 10:51:05
+% Last Modified by GUIDE v2.5 02-Feb-2017 14:55:01
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -57,6 +57,16 @@ if ~exist('PicoMotor', 'class')
         'Please add the class to your search path and try again.']);
 end
 
+% style gui
+set(handles.axes1, 'XTick', '', 'YTick', '');
+set(handles.axes2, 'XTick', '', 'YTick', '');
+handles.edFraction.BackgroundColor = [0.9 0.6 0.6];
+handles.edAtomNumber.BackgroundColor = [0.9 0.6 0.6];
+handles.edStatus.BackgroundColor = [0.9 0.6 0.6];
+
+% set initial values
+handles.go = 0;
+
 % Choose default command line output for SinglicityFeedbackGui
 handles.output = hObject;
 
@@ -88,7 +98,7 @@ function tbConnect_Callback(hObject, eventdata, handles)
 
 if get(hObject,'Value')
     % initialize the PicoMotor object
-    PM = PicoMotor('debug', 3);
+    PM = PicoMotor('debug', 0);
     handles.PM = PM;
     handles.Connected = 1;
     set(hObject, 'String', 'Disconnect');
@@ -138,7 +148,7 @@ function pbPlus1_Callback(hObject, eventdata, handles)
 % handles    structure with handles and user data (see GUIDATA)
 
 if handles.Connected
-    handles.PM.rel(1);
+    handles.PM.rel(100);
     handles.PM.go;
 else
     warndlg('Please connect to the PicoMotor controller first');
@@ -151,7 +161,7 @@ function pbMinus1_Callback(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
 if handles.Connected
-    handles.PM.rel(-1);
+    handles.PM.rel(-100);
     handles.PM.go;
 else
     warndlg('Please connect to the PicoMotor controller first');
@@ -197,7 +207,31 @@ function tbEnableFeedback_Callback(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
 
+if get(hObject,'Value')
+    dataPath = get(handles.edPath, 'String');
+    file = System.IO.FileSystemWatcher(dataPath);
+    file.InternalBufferSize = 4*4096;
+    file.Filter = [handles.edPrefix.String '*.png'];
+    file.EnableRaisingEvents = true;
+    addlistener(file,'Changed',@fileChanged);
+    addlistener(file,'Deleted',@fileChanged);
+    handles.fileWatcher = file;
+    guidata(hObject, handles);
+else
+    file = handles.fileWatcher;
+    file.EnableRaisingEvents = false;
+end
 
+% --- execute an update on the data if a
+% change in the folder structure was detected by the .NET listener
+function fileChanged(source, arg)
+handles = guidata(SinglicityFeedbackGui);
+[hObject, handles] = loadImages(SinglicityFeedbackGui, handles);
+[hObject, handles] = atomInfo(SinglicityFeedbackGui, handles);
+
+if get(handles.tbEnableFeedback, 'Value')
+    performFeedback(hObject, handles);
+end
 
 function edPrefix_Callback(hObject, eventdata, handles)
 % hObject    handle to edPrefix (see GCBO)
@@ -352,7 +386,9 @@ function btgrpMotorResolution_SelectionChangedFcn(hObject, eventdata, handles)
 % handles    structure with handles and user data (see GUIDATA)
 
 handles.PM.setResolution(upper(hObject.String));
-
+% selected axis
+selAx = handles.pmSelectAxis.Value;
+handles.PM.setMotor(str2double(handles.pmSelectAxis.String(selAx)));
 
 % --- Executes on button press in pbSetCamControlFolder.
 function pbSetCamControlFolder_Callback(hObject, eventdata, handles)
@@ -369,10 +405,11 @@ function pbLoadImage_Callback(hObject, eventdata, handles)
 % hObject    handle to pbLoadImage (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
-I = loadImages(hObject, handles);
-atomInfo(hObject, handles);
+[hObject, handles] = loadImages(hObject, handles);
+[hObject, handles] = atomInfo(hObject, handles);
+preFlight(hObject,handles);
 
-function atomInfo(hObject, handles)
+function [hObject, handles] = atomInfo(hObject, handles)
 % plot linesum
 ls = sum(handles.I, 2);
 lsNorm = (ls-min(ls(:)))/(max(ls(:))-min(ls(:)));
@@ -411,13 +448,13 @@ Nl = sqrt(2*pi)*fitresult.a2*fitresult.w;
 Nr = sqrt(2*pi)*fitresult.a3*fitresult.w;
 Na = Nc+Nl+Nr;
 % relative number of atoms in each peak.
-nc = Nc/Na;
-nl = Nl/Na;
-nr = Nr/Na;
-nnc = nl+nr;
+handles.nc = Nc/Na;
+handles.nl = Nl/Na;
+handles.nr = Nr/Na;
+handles.nnc = handles.nl+handles.nr;
 
 % set actual atom ratio
-handles.edFraction.String = num2str(nnc*100,2);
+handles.edFraction.String = num2str(handles.nnc*100,2);
 
 a1 = fitresult.a1;
 a2 = fitresult.a2;
@@ -436,11 +473,41 @@ plot(handles.axes2, a3*exp(-0.5*(xx-x0-dx).^2/w^2)+c, xx, '--');
 
 % get and plot thresholds 
 th = (str2double(handles.edThreshold.String)/100)*(1-fitresult.c);
-plot(handles.axes2, (th+fitresult.c)*[1, 1], [1,size(handles.I,1)]);
-
+plot(handles.axes2, (th+fitresult.c)*[1, 1], [1,size(handles.I,1)], 'r-.');
 hold(handles.axes2, 'off');
 
-function I = loadImages(hObject, handles)
+function preFlight(hObject, handles)
+% check if threshold is larger than misalignment
+go1 = 0;
+if str2double(handles.edThreshold.String) > str2double(handles.edFraction.String)
+    handles.edFraction.BackgroundColor = [0.6 0.9 0.7];
+else
+    handles.edFraction.BackgroundColor = [0.9 0.6 0.6];
+    go1 = 1;
+end
+
+% check if atom number is larger than min atom number
+go2 = 0;
+if str2double(handles.edMinNum.String) < str2double(handles.edAtomNumber.String)
+    handles.edAtomNumber.BackgroundColor = [0.6 0.9 0.7];
+    go2 = 1;
+else
+    handles.edAtomNumber.BackgroundColor = [0.9 0.6 0.6];
+end
+
+handles.go = and(go1, go2);
+
+if handles.go
+    handles.edStatus.BackgroundColor = [0.6 0.9 0.7];
+    handles.edStatus.String = 'Go';
+else
+    handles.edStatus.BackgroundColor = [0.9 0.6 0.6];
+    handles.edStatus.String = 'Stop';
+end
+guidata(hObject, handles);
+
+
+function [hObject, handles] = loadImages(hObject, handles)
 basePath = get(handles.edPath, 'String');
 prefix = get(handles.edPrefix, 'String');
 
@@ -453,7 +520,17 @@ set(handles.axes1, 'XTick', '', 'YTick', '');
 caxis([ 0 30e12]);
 guidata(hObject, handles);
 
+function performFeedback(hObject, handles)
+if handles.go
+    if handles.nr > handles.nl
+        if tbPolarity
+            handles.PM.rel(+1);
+        end
+    elseif handles.nr < handles.nl
+    end
+end
 
+guidata(hObject, handles);
 
 % --- Executes on selection change in lsProtocol.
 function lsProtocol_Callback(hObject, eventdata, handles)
@@ -491,6 +568,38 @@ function edPixelSize_Callback(hObject, eventdata, handles)
 % --- Executes during object creation, after setting all properties.
 function edPixelSize_CreateFcn(hObject, eventdata, handles)
 % hObject    handle to edPixelSize (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in rbGo.
+function rbGo_Callback(hObject, eventdata, handles)
+% hObject    handle to rbGo (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of rbGo
+
+
+
+function edStatus_Callback(hObject, eventdata, handles)
+% hObject    handle to edStatus (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of edStatus as text
+%        str2double(get(hObject,'String')) returns contents of edStatus as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function edStatus_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to edStatus (see GCBO)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    empty - handles not created until after all CreateFcns called
 
