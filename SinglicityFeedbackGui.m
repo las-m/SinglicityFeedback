@@ -22,7 +22,7 @@ function varargout = SinglicityFeedbackGui(varargin)
 
 % Edit the above text to modify the response to help SinglicityFeedbackGui
 
-% Last Modified by GUIDE v2.5 02-Feb-2017 14:55:01
+% Last Modified by GUIDE v2.5 05-Feb-2017 15:07:18
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -98,14 +98,16 @@ function tbConnect_Callback(hObject, eventdata, handles)
 
 if get(hObject,'Value')
     % initialize the PicoMotor object
-    PM = PicoMotor('debug', 0);
+    PM = PicoMotor('debug', 3);
     handles.PM = PM;
     handles.Connected = 1;
     set(hObject, 'String', 'Disconnect');
+    addProtocolLine(handles, 'Connected to PicoMotor controller.');
 else
     % delete the PicoMotor object
     handles.PM.delete;
     handles.Connected = 0;
+    addProtocolLine(handles, 'Disconnected from PicoMotor controller.');
     set(hObject, 'String', 'Connect');
 end
 % Update handles structure
@@ -123,6 +125,7 @@ function pmSelectAxis_Callback(hObject, eventdata, handles)
 if handles.Connected
     contents = cellstr(get(hObject,'String'));
     handles.PM.setMotor(contents{get(hObject,'Value')});
+    addProtocolLine(handles, ['Selected axis ' contents{get(hObject,'Value')} '.']);
 else
     warndlg('Please connect to the PicoMotor controller first');
 end
@@ -148,11 +151,44 @@ function pbPlus1_Callback(hObject, eventdata, handles)
 % handles    structure with handles and user data (see GUIDATA)
 
 if handles.Connected
-    handles.PM.rel(100);
-    handles.PM.go;
+    n = getN(handles);
+    if n > 0
+        handles.PM.rel(n);
+        handles.PM.go;
+        addProtocolLine(handles, ['Moved by -' num2str(n) ' steps.']);
+    end
 else
     warndlg('Please connect to the PicoMotor controller first');
 end
+
+function n = getN(handles)
+n = 0;
+nTmp = str2double(handles.edN.String);
+if ~isnumeric(nTmp)
+    warndlg('Only numeric arguments are allowed for the stepsize n.')
+elseif nTmp > 100
+    % Construct a questdlg with two options
+    choice = questdlg('Would you really go more than 100 steps?', ...
+        '> 100 Steps Warning', ...
+        'Yes','No','No');
+    % Handle response
+    switch choice
+        case 'Yes'
+            n = nTmp;
+        case 'No'
+            n = 0;
+    end
+else
+    n = nTmp;
+end
+
+% adds a protocol line to the action protocol
+function addProtocolLine(handles, msg)
+oldProtocol = flipud(handles.lsProtocol.String);
+t = datetime('now');
+t.Format = 'uuuuMMdd HH:mm:ss';
+oldProtocol{end + 1} = [char(t) ':' msg];
+handles.lsProtocol.String = flipud(oldProtocol);
 
 
 % --- Executes on button press in pbMinus1.
@@ -161,8 +197,12 @@ function pbMinus1_Callback(hObject, eventdata, handles)
 % eventdata  reserved - to be defined in a future version of MATLAB
 % handles    structure with handles and user data (see GUIDATA)
 if handles.Connected
-    handles.PM.rel(-100);
-    handles.PM.go;
+    n = getN(handles);
+    if n > 0
+        handles.PM.rel(-n);
+        handles.PM.go;
+        addProtocolLine(handles, ['Moved by -' num3str(n) ' steps.']);
+    end
 else
     warndlg('Please connect to the PicoMotor controller first');
 end
@@ -228,9 +268,36 @@ function fileChanged(source, arg)
 handles = guidata(SinglicityFeedbackGui);
 [hObject, handles] = loadImages(SinglicityFeedbackGui, handles);
 [hObject, handles] = atomInfo(SinglicityFeedbackGui, handles);
+addProtocolLine(handles, 'Loaded new image.');
 
 if get(handles.tbEnableFeedback, 'Value')
     performFeedback(hObject, handles);
+end
+
+% --- Executes when feedback should occur
+function performFeedback(hObject, handles)
+% Check, if the initial conditions are fulfilled for performing feedback
+if handles.go
+    % get the set value for the polarity of the feedback
+    if get(handles.tbPolarity, 'Value')
+        mul = 1;
+    else
+        mul = -1;
+    end
+    % get the direction of the p-feedback
+    direction = (handles.nl - handles.nr)*mul;
+    % get the number of steps to walk
+    n = str2double(handles.edStepSize.String);
+    % calculate the number and direction of steps 
+    if direction > 0
+        n = n;
+    elseif direction < 0
+        n = -n;
+    end
+    % do the actual movement
+    handles.PM.rel(n);
+    handles.PM.go;
+    addProtocolLine(handles, ['Moved by ' num2str(n) ' steps.']);
 end
 
 function edPrefix_Callback(hObject, eventdata, handles)
@@ -520,18 +587,6 @@ set(handles.axes1, 'XTick', '', 'YTick', '');
 caxis([ 0 30e12]);
 guidata(hObject, handles);
 
-function performFeedback(hObject, handles)
-if handles.go
-    if handles.nr > handles.nl
-        if tbPolarity
-            handles.PM.rel(+1);
-        end
-    elseif handles.nr < handles.nl
-    end
-end
-
-guidata(hObject, handles);
-
 % --- Executes on selection change in lsProtocol.
 function lsProtocol_Callback(hObject, eventdata, handles)
 % hObject    handle to lsProtocol (see GCBO)
@@ -608,3 +663,27 @@ function edStatus_CreateFcn(hObject, eventdata, handles)
 if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
     set(hObject,'BackgroundColor','white');
 end
+
+
+
+function edN_Callback(hObject, eventdata, handles)
+% hObject    handle to edN (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of edN as text
+%        str2double(get(hObject,'String')) returns contents of edN as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function edN_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to edN (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+    
