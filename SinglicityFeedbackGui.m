@@ -22,7 +22,7 @@ function varargout = SinglicityFeedbackGui(varargin)
 
 % Edit the above text to modify the response to help SinglicityFeedbackGui
 
-% Last Modified by GUIDE v2.5 05-Feb-2017 15:07:18
+% Last Modified by GUIDE v2.5 17-Feb-2017 17:05:08
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -63,6 +63,7 @@ set(handles.axes2, 'XTick', '', 'YTick', '');
 handles.edFraction.BackgroundColor = [0.9 0.6 0.6];
 handles.edAtomNumber.BackgroundColor = [0.9 0.6 0.6];
 handles.edStatus.BackgroundColor = [0.9 0.6 0.6];
+handles.edSteps.BackgroundColor = [0.6 0.9 0.7];
 
 % set initial values
 handles.go = 0;
@@ -98,7 +99,7 @@ function tbConnect_Callback(hObject, eventdata, handles)
 
 if get(hObject,'Value')
     % initialize the PicoMotor object
-    PM = PicoMotor('debug', 3);
+    PM = PicoMotor();
     handles.PM = PM;
     handles.Connected = 1;
     set(hObject, 'String', 'Disconnect');
@@ -155,7 +156,8 @@ if handles.Connected
     if n > 0
         handles.PM.rel(n);
         handles.PM.go;
-        addProtocolLine(handles, ['Moved by -' num2str(n) ' steps.']);
+        addProtocolLine(handles, ['Moved by +' num2str(n) ' steps.']);
+        setStepAccumulator(handles, n);
     end
 else
     warndlg('Please connect to the PicoMotor controller first');
@@ -201,12 +203,23 @@ if handles.Connected
     if n > 0
         handles.PM.rel(-n);
         handles.PM.go;
-        addProtocolLine(handles, ['Moved by -' num3str(n) ' steps.']);
+        addProtocolLine(handles, ['Moved by -' num2str(n) ' steps.']);
+        setStepAccumulator(handles, -n);
     end
 else
     warndlg('Please connect to the PicoMotor controller first');
 end
 
+function setStepAccumulator(handles, n)
+oldSteps = str2double(handles.edSteps.String);
+newSteps = oldSteps + n;
+handles.edSteps.String = num2str(newSteps);
+if newSteps > 200
+    handles.edSteps.BackgroundColor = [0.9 0.6 0.6];
+    error('Too the script walked more than 200 steps in one direction. Stop for safety reasons.');
+else
+    handles.edSteps.BackgroundColor = [0.6 0.9 0.7];
+end
 
 function edPath_Callback(hObject, eventdata, handles)
 % hObject    handle to edPath (see GCBO)
@@ -237,7 +250,7 @@ function pbSelectFolder_Callback(hObject, eventdata, handles)
 % handles    structure with handles and user data (see GUIDATA)
 pathSelect = uigetdir;
 if pathSelect
-    set(handles.edPath, 'String', pathSelect);
+    set(handles.edPath, 'String', [pathSelect '\']);
 end
 
 
@@ -269,6 +282,7 @@ handles = guidata(SinglicityFeedbackGui);
 [hObject, handles] = loadImages(SinglicityFeedbackGui, handles);
 [hObject, handles] = atomInfo(SinglicityFeedbackGui, handles);
 addProtocolLine(handles, 'Loaded new image.');
+[hObject, handles] = preFlight(hObject,handles);
 
 if get(handles.tbEnableFeedback, 'Value')
     performFeedback(hObject, handles);
@@ -298,6 +312,9 @@ if handles.go
     handles.PM.rel(n);
     handles.PM.go;
     addProtocolLine(handles, ['Moved by ' num2str(n) ' steps.']);
+    setStepAccumulator(handles, n);
+else
+    addProtocolLine(handles, ['No clearance by condition checker.']);
 end
 
 function edPrefix_Callback(hObject, eventdata, handles)
@@ -492,7 +509,7 @@ a.YColor = [1 1 1];
 a.Box = 'on';
 
 % get atom number 
-handles.edAtomNumber.String = num2str(sum(ls(:)*(str2double(handles.edPixelSize.String))^2),2);
+handles.edAtomNumber.String = num2str(sum(ls(:)),2);
 
 % perform triple gaussian fit
 [xData, yData] = prepareCurveData( (1:size(handles.I,1))', lsNorm );
@@ -503,7 +520,22 @@ opts = fitoptions( 'Method', 'NonlinearLeastSquares' );
 opts.Display = 'Off';
 opts.Lower = [0 0 0 0 10 0 0];
 opts.Robust = 'Bisquare';
-opts.StartPoint = [1 0.1 0.1 0 30 20 size(handles.I,1)/2];
+
+maxfind = yData;
+maxfind(yData < mean(yData)) = 0;
+% find maxima
+maxima = find( diff( sign( diff(maxfind) ) ) < 0 );
+[valMax, ind] = max(yData(maxima));
+valMin = min(yData(maxima));
+if valMin < 0.2
+    valMin = 0.2;
+end
+dI = mean(abs(diff(maxima)));
+if dI > 15
+    dI = 15;
+end
+wI = dI/2;
+opts.StartPoint = [valMax valMin valMin 0 dI wI maxima(ind)];
 opts.Upper = [1 0.5 0.5 0.1 100 50 size(handles.I,1)];
 
 % Fit model to data.
@@ -515,13 +547,21 @@ Nl = sqrt(2*pi)*fitresult.a2*fitresult.w;
 Nr = sqrt(2*pi)*fitresult.a3*fitresult.w;
 Na = Nc+Nl+Nr;
 % relative number of atoms in each peak.
-handles.nc = Nc/Na;
-handles.nl = Nl/Na;
-handles.nr = Nr/Na;
-handles.nnc = handles.nl+handles.nr;
-
+% save results in array
+if isfield(handles, 'nc')
+    handles.nc(end+1) = Nc/Na;
+    handles.nl(end+1) = Nl/Na;
+    handles.nr(end+1) = Nr/Na;
+    handles.nnc(end+1) = (Nl+Nr)/Na;
+else
+    handles.nc = Nc/Na;
+    handles.nl = Nl/Na;
+    handles.nr = Nr/Na;
+    handles.nnc = handles.nl+handles.nr;
+end
+    
 % set actual atom ratio
-handles.edFraction.String = num2str(handles.nnc*100,2);
+handles.edFraction.String = num2str(handles.nnc(end)*100,2);
 
 a1 = fitresult.a1;
 a2 = fitresult.a2;
@@ -538,12 +578,13 @@ plot(handles.axes2, a1*exp(-0.5*(xx-x0).^2/w^2)+c, xx, '-');
 plot(handles.axes2, a2*exp(-0.5*(xx-x0+dx).^2/w^2)+c, xx, '--');
 plot(handles.axes2, a3*exp(-0.5*(xx-x0-dx).^2/w^2)+c, xx, '--');
 
+
 % get and plot thresholds 
 th = (str2double(handles.edThreshold.String)/100)*(1-fitresult.c);
 plot(handles.axes2, (th+fitresult.c)*[1, 1], [1,size(handles.I,1)], 'r-.');
 hold(handles.axes2, 'off');
 
-function preFlight(hObject, handles)
+function [hObject, handles] = preFlight(hObject, handles)
 % check if threshold is larger than misalignment
 go1 = 0;
 if str2double(handles.edThreshold.String) > str2double(handles.edFraction.String)
@@ -581,10 +622,11 @@ prefix = get(handles.edPrefix, 'String');
 listOfFiles = dir([basePath prefix '*.png']);
 [~, sortIndex] = sort([listOfFiles(:).datenum],'descend');
 I = imread([basePath listOfFiles(sortIndex(1)).name]);
-handles.I = I;
+handles.I = (double(I)-5000)/15550*2*pi/(3*(671e-9)^2)...
+    /(str2double(handles.edPixelSize.String))^2*1e-12;
 imagesc(handles.axes1, handles.I)
 set(handles.axes1, 'XTick', '', 'YTick', '');
-caxis([ 0 30e12]);
+caxis([0 max(handles.I(:))]);
 guidata(hObject, handles);
 
 % --- Executes on selection change in lsProtocol.
@@ -687,3 +729,38 @@ if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgr
     set(hObject,'BackgroundColor','white');
 end
     
+
+
+
+function edSteps_Callback(hObject, eventdata, handles)
+% hObject    handle to edSteps (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of edSteps as text
+%        str2double(get(hObject,'String')) returns contents of edSteps as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function edSteps_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to edSteps (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in pbExpEv.
+function pbExpEv_Callback(hObject, eventdata, handles)
+% hObject    handle to pbExpEv (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+assignin('base','nc',handles.nc);
+assignin('base','nl',handles.nl);
+assignin('base','nr',handles.nr);
+assignin('base','nnc',handles.nnc);
+ 
