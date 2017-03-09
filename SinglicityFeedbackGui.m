@@ -22,7 +22,7 @@ function varargout = SinglicityFeedbackGui(varargin)
 
 % Edit the above text to modify the response to help SinglicityFeedbackGui
 
-% Last Modified by GUIDE v2.5 17-Feb-2017 17:05:08
+% Last Modified by GUIDE v2.5 09-Mar-2017 13:46:18
 
 % Begin initialization code - DO NOT EDIT
 gui_Singleton = 1;
@@ -497,16 +497,22 @@ function [hObject, handles] = atomInfo(hObject, handles)
 % plot linesum
 ls = sum(handles.I, 2);
 lsNorm = (ls-min(ls(:)))/(max(ls(:))-min(ls(:)));
-plot(handles.axes2, lsNorm, 1:size(handles.I,1));
-xlim(handles.axes2, [0 1])
-ylim(handles.axes2, [1 size(handles.I,1)])
-a = handles.axes2;
-a.YDir = 'reverse';
-a.YTickLabel = '';
-a.XTickLabel = '';
-a.XColor = [1 1 1];
-a.YColor = [1 1 1];
-a.Box = 'on';
+if ~isfield(handles, 'l0')
+    handles.l0 = plot(handles.axes2, lsNorm, 1:size(handles.I,1));
+    xlim(handles.axes2, [0 1])
+    ylim(handles.axes2, [1 size(handles.I,1)])
+    a = handles.axes2;
+    a.YDir = 'reverse';
+    a.YTickLabel = '';
+    a.XTickLabel = '';
+    a.XColor = [1 1 1];
+    a.YColor = [1 1 1];
+    a.Box = 'on';
+else
+    a = handles.axes2;
+    handles.l0.XData = lsNorm;
+    a.YDir = 'reverse';
+end
 
 % get atom number 
 handles.edAtomNumber.String = num2str(sum(ls(:)),2);
@@ -515,31 +521,59 @@ handles.edAtomNumber.String = num2str(sum(ls(:)),2);
 [xData, yData] = prepareCurveData( (1:size(handles.I,1))', lsNorm );
 
 % Set up fittype and options.
-ft = fittype( 'a1*exp(-0.5*(x-x0)^2/w^2)+a2*exp(-0.5*(x-x0+dx)^2/w^2)+a3*exp(-0.5*(x-x0-dx)^2/w^2)+c', 'independent', 'x', 'dependent', 'y' );
+if handles.chkkeepdI.Value
+    ft = fittype( 'a1*exp(-0.5*(x-x0)^2/w^2)+a2*exp(-0.5*(x-x0+dx)^2/w^2)+a3*exp(-0.5*(x-x0-dx)^2/w^2)+c', 'problem', 'dx', 'independent', 'x', 'dependent', 'y' );
+else
+    ft = fittype( 'a1*exp(-0.5*(x-x0)^2/w^2)+a2*exp(-0.5*(x-x0+dx)^2/w^2)+a3*exp(-0.5*(x-x0-dx)^2/w^2)+c', 'independent', 'x', 'dependent', 'y' );
+end
 opts = fitoptions( 'Method', 'NonlinearLeastSquares' );
 opts.Display = 'Off';
-opts.Lower = [0 0 0 0 10 0 0];
 opts.Robust = 'Bisquare';
 
-maxfind = yData;
-maxfind(yData < mean(yData)) = 0;
-% find maxima
-maxima = find( diff( sign( diff(maxfind) ) ) < 0 );
-[valMax, ind] = max(yData(maxima));
-valMin = min(yData(maxima));
-if valMin < 0.2
-    valMin = 0.2;
+if ~isfield(handles, 'y0')
+    maxfind = yData;
+    maxfind(yData < mean(yData)) = 0;
+    % find maxima
+    maxima = find( diff( sign( diff(maxfind) ) ) < 0 );
+    [valMax, ind] = max(yData(maxima));
+    valMin = min(yData(maxima));
+    if valMin < 0.2
+        valMin = 0.2;
+    end
+    dI = mean(abs(diff(maxima)));
+    if dI > 15
+        dI = 15;
+    end
+    wI = dI/2;
+    y0 = maxima(ind);
+else
+    valMax = handles.valMax;
+    valMin = handles.valMin;
+    dI = handles.dI;
+    wI = dI/3;
+    maxfind = yData;
+    maxfind(yData < mean(yData)) = 0;
+    % find maxima
+    maxima = find( diff( sign( diff(maxfind) ) ) < 0 );
+    [~, ind] = max(yData(maxima));
+    y0 = maxima(ind);
 end
-dI = mean(abs(diff(maxima)));
-if dI > 15
-    dI = 15;
+
+if handles.chkkeepdI.Value
+    opts.Lower = [0 0 0 0 0 0];
+    opts.StartPoint = [valMax valMin valMin 0 wI y0];
+    opts.Upper = [1 0.5 0.5 0.1 50 size(handles.I,1)];
+    problem = dI;
+else
+    opts.Lower = [0 0 0 0 10 0 0];
+    opts.StartPoint = [valMax valMin valMin 0 dI wI y0];
+    opts.Upper = [1 0.5 0.5 0.1 100 50 size(handles.I,1)];
+    problem = {};
 end
-wI = dI/2;
-opts.StartPoint = [valMax valMin valMin 0 dI wI maxima(ind)];
-opts.Upper = [1 0.5 0.5 0.1 100 50 size(handles.I,1)];
 
 % Fit model to data.
-[fitresult, ~] = fit( xData, yData, ft, opts );
+
+[fitresult, ~] = fit( xData, yData, ft, opts, 'problem', problem);
 
 % calculate number of atoms in left and right and center strangely normalized.
 Nc = sqrt(2*pi)*fitresult.a1*fitresult.w;
@@ -572,17 +606,27 @@ dx = fitresult.dx;
 x0 = fitresult.x0;
 
 % plot fitresult
-hold(handles.axes2, 'on');
-xx = 1:size(handles.I,1);
-plot(handles.axes2, a1*exp(-0.5*(xx-x0).^2/w^2)+c, xx, '-');
-plot(handles.axes2, a2*exp(-0.5*(xx-x0+dx).^2/w^2)+c, xx, '--');
-plot(handles.axes2, a3*exp(-0.5*(xx-x0-dx).^2/w^2)+c, xx, '--');
+if ~isfield(handles, 'l1')
+    hold(handles.axes2, 'on');
+    xx = 1:size(handles.I,1);
+    handles.l1 = plot(handles.axes2, a1*exp(-0.5*(xx-x0).^2/w^2)+c, xx, '-');
+    handles.l2 = plot(handles.axes2, a2*exp(-0.5*(xx-x0+dx).^2/w^2)+c, xx, '--');
+    handles.l3 = plot(handles.axes2, a3*exp(-0.5*(xx-x0-dx).^2/w^2)+c, xx, '--');
+    % get and plot thresholds
+    th = (str2double(handles.edThreshold.String)/100)*(1-fitresult.c);
+    handles.l4 = plot(handles.axes2, (th+fitresult.c)*[1, 1], [1,size(handles.I,1)], 'r-.');
+    hold(handles.axes2, 'off');
+else
+    xx = 1:size(handles.I,1);
+    handles.l1.XData = a1*exp(-0.5*(xx-x0).^2/w^2)+c;
+    handles.l2.XData = a2*exp(-0.5*(xx-x0+dx).^2/w^2)+c;
+    handles.l3.XData = a3*exp(-0.5*(xx-x0-dx).^2/w^2)+c;
+    % get and plot thresholds
+    th = (str2double(handles.edThreshold.String)/100)*(1-fitresult.c);
+    handles.l4.XData = (th+fitresult.c)*[1, 1];
+end
+guidata(hObject, handles);
 
-
-% get and plot thresholds 
-th = (str2double(handles.edThreshold.String)/100)*(1-fitresult.c);
-plot(handles.axes2, (th+fitresult.c)*[1, 1], [1,size(handles.I,1)], 'r-.');
-hold(handles.axes2, 'off');
 
 function [hObject, handles] = preFlight(hObject, handles)
 % check if threshold is larger than misalignment
@@ -624,9 +668,13 @@ listOfFiles = dir([basePath prefix '*.png']);
 I = imread([basePath listOfFiles(sortIndex(1)).name]);
 handles.I = (double(I)-5000)/15550*2*pi/(3*(671e-9)^2)...
     /(str2double(handles.edPixelSize.String))^2*1e-12;
-imagesc(handles.axes1, handles.I)
-set(handles.axes1, 'XTick', '', 'YTick', '');
-caxis([0 max(handles.I(:))]);
+if ~isfield(handles, 'image')
+    handles.image = imagesc(handles.axes1, handles.I);
+    set(handles.axes1, 'XTick', '', 'YTick', '');
+    caxis([0 max(handles.I(:))]);
+else
+    handles.image.CData = handles.I;
+end
 guidata(hObject, handles);
 
 % --- Executes on selection change in lsProtocol.
@@ -764,3 +812,79 @@ assignin('base','nl',handles.nl);
 assignin('base','nr',handles.nr);
 assignin('base','nnc',handles.nnc);
  
+
+
+
+function edit13_Callback(hObject, eventdata, handles)
+% hObject    handle to edit13 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hints: get(hObject,'String') returns contents of edit13 as text
+%        str2double(get(hObject,'String')) returns contents of edit13 as a double
+
+
+% --- Executes during object creation, after setting all properties.
+function edit13_CreateFcn(hObject, eventdata, handles)
+% hObject    handle to edit13 (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    empty - handles not created until after all CreateFcns called
+
+% Hint: edit controls usually have a white background on Windows.
+%       See ISPC and COMPUTER.
+if ispc && isequal(get(hObject,'BackgroundColor'), get(0,'defaultUicontrolBackgroundColor'))
+    set(hObject,'BackgroundColor','white');
+end
+
+
+% --- Executes on button press in pbSelPeak.
+function pbSelPeak_Callback(hObject, eventdata, handles)
+% hObject    handle to pbSelPeak (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+if isfield(handles, 'I')
+    % make data accessible for other gui windows
+    setappdata(0,'mainHandles',handles);
+    selPeak = SinglicityFeedbackGuiSelectPeaks;
+    ed1st = str2double(strsplit(selPeak.edFirstPeak.String,'/'));
+    ed2nd = str2double(strsplit(selPeak.edSecondPeak.String,'/'));
+    ed3rd = str2double(strsplit(selPeak.edThirdPeak.String,'/'));
+    
+    if ed1st(1) > ed2nd(1)
+        handles.y0 = ed1st(2);
+        handles.valMax = ed1st(1);
+        handles.valMin = ed2nd(1);
+        handles.dI = abs(ed2nd(2)-ed1st(2));
+    else
+        handles.y0 = ed2nd(2);
+        handles.valMax = ed2nd(1);
+        handles.valMin = ed1st(1);
+        handles.dI = abs(ed2nd(2)-ed1st(2));
+    end
+    
+    txt = {'Selected:', ['  y0 = ' num2str(handles.y0)], ...
+        ['  delta = ' num2str(handles.dI)], ...
+        ['  min = ' num2str(handles.valMin)], ...
+        ['  max = ' num2str(handles.valMax)]};
+    if isfield(handles, 'axes2initials')
+        handles.axes2initials.delete;
+    end
+    handles.axes2initials = text(handles.axes2, 0.3, 30, txt, 'FontSize', 7, 'Color', [.4 .4 .4]);
+    guidata(hObject, handles);
+else
+    warndlg('Make sure to load an image first before you try to select peaks in it...');
+end
+
+
+% --- Executes on button press in chkkeepdI.
+function chkkeepdI_Callback(hObject, eventdata, handles)
+% hObject    handle to chkkeepdI (see GCBO)
+% eventdata  reserved - to be defined in a future version of MATLAB
+% handles    structure with handles and user data (see GUIDATA)
+
+% Hint: get(hObject,'Value') returns toggle state of chkkeepdI
+if ~isfield(handles, 'dI')
+    warndlg('Attention: select a peak distance first by klicking "Select Peaks" before you try to keep it constant...');
+    set(hObject,'Value',0)
+end
